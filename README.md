@@ -13,7 +13,7 @@
 |---|---|---|
 | 1 | Glendy Aracely De León Cajero | 202102379 |
 | 2 | Mayelin Lucía Quevedo Camey | 202307771 |
-| 3 | | |
+| 3 | Emily Maritza Tepeu Guacamaya | 202402955 |
 
 ## 1. Introducción
 
@@ -65,7 +65,7 @@ Para el desarrollo del proyecto BanTech GT se utilizaron los valores **XX = 71**
 
 ## 3. Topología completa
 
-![Topología completa](Imagenes/Occidente-Core/01_Topologia_Completa.png)
+![Topología general](Imagenes/Oriente-RIPv2/14_Topologia_General.png)
 
 # 4. Sede Occidente
 
@@ -683,5 +683,459 @@ Todos los pings se hicieron desde el Command Prompt de un PC.
 
 
 ![Fallo EtherChannel](Imagenes/Data_Center-Norte/38_Fallo_EtherChannel.png)
+
+---
+
+# BanTech GT: Sede Oriente y RIPv2
+
+| Sede | Dominio de enrutamiento | Equipos | Dispositivos finales |
+|---|---|---|---|
+| Oriente (Centro Financiero Legado) | RIPv2 (redistribuido a OSPF 7 en R-CORE1) | MS1, MS2, SW-Oriente1, SW-Oriente2 | 10 PCs (5 por VLAN) |
+
+Tecnologías aplicadas: VLANs con nombre, trunks 802.1Q, Rapid PVST+ con Root Bridge forzado, HSRP, enrutamiento inter-VLAN mediante interfaces SVI en switches multicapa, RIPv2 y redistribución RIPv2 ↔ OSPF.
+
+---
+
+## 8. Sede Oriente
+
+### 8.1 Topología
+
+**Descripción** Topología de la Sede Oriente. Los dos switches multicapa MS1 y MS2 (3560-24PS) forman la capa de distribución y están enlazados entre sí. Cada switch de acceso (SW-Oriente1 y SW-Oriente2, 2960-24TT) se conecta a ambos multicapa. MS1 y MS2 tienen también cuentan con un enlace de capa 3 cada uno hacia R-CORE1 del backbone.
+
+Los rectángulos de color de la sede agrupan los equipos conectados a cada switch de acceso (SW-Oriente1 y SW-Oriente2). Ambos switches llevan equipos de las dos VLANs, y el rótulo de cada cuadro indica la VLAN con más equipos en ese switch: el cuadro amarillo dice VLAN 87 porque tiene tres PCs de Bóveda y dos de Plataforma, y la rosa dice VLAN 97 porque tiene tres PCs de Plataforma y dos de Bóveda. La pertenencia exacta de cada PC está en la tabla 8.5 y se verifica con `show vlan brief`.
+
+![Topología Oriente](Imagenes/Oriente-RIPv2/11_Topologia_Oriente.png)
+
+### 8.2 Contexto y necesidad operativa
+
+La Sede Oriente pertenece a un banco que BanTech GT acababa de comprar y se trata como una sede crítica corporativa. El diseño del backbone ya incluyó para esta área dos switches multicapa, **MS1** y **MS2**. La necesidad operativa era alta disponibilidad del gateway: los usuarios finales no pueden perder conectividad hacia el núcleo del banco aunque MS1, el switch multicapa principal, sufra un corte de energía. La topología de acceso debía conectarse simultáneamente a MS1 y MS2.
+
+### 8.3 Justificación de arquitectura
+
+**Topología física:** Se usó un diseño de doble conexión. MS1 y MS2 están unidos por un trunk (`Fa0/24`) y cada uno se conecta con un trunk a cada switch de acceso. Los dos switches de acceso a la vez llevan los equipos de las dos VLANs. Así ningún switch de acceso depende de un solo multicapa y cada multicapa tiene su propio enlace de capa 3 hacia R-CORE1.
+
+**Tolerancia a fallos:** Rapid PVST+ deja activo un solo camino por VLAN y mantiene el otro como alterno (`Altn BLK` en el puerto `Fa0/2` de cada switch de acceso). Si MS1 falla, ese puerto pasa a reenviar y el tráfico continúa por MS2. En capa 3, HSRP mantiene la misma dirección de gateway aunque cambie el equipo que la atiende, por lo que las PCs no necesitan reconfigurarse. La prueba de la sección 11 muestra la conmutación automática.
+
+**Respuesta a la necesidad operativa:** MS1 y MS2 comparten las IP virtuales de gateway de las VLANs 87 y 97. MS1 es el gateway activo y MS2 queda en standby con `preempt`: si MS1 deja de responder, MS2 asume el rol, y cuando MS1 regresa recupera el rol activo.
+
+**Elección del Root Bridge:** `MS1` es el Root Bridge de las VLANs 87 y 97 (prioridad 4096) y `MS2` es el Root secundario (prioridad 8192). Se eligió que MS1 fuera la raíz porque también es el gateway HSRP activo: el camino de capa 2 y el de capa 3 coinciden de modo que el tráfico de las PCs llega por el camino más corto al equipo que realmente enruta.
+
+**Elección de HSRP:** El entorno de la sede es completamente Cisco y la rúbrica de calificación lista HSRP entre las tecnologías requeridas. VRRP se descartó porque su ventaja principal, la interoperabilidad con equipos de otros fabricantes, no hace falta en esta sede. El número de grupo coincide con el ID de la VLAN (87 y 97) para facilitar la lectura de la salida de `show standby brief`. Se configuraron los temporizadores `1 3` (hello de 1 segundo y hold de 3) para acortar la detección de una falla frente a los valores por defecto.
+
+**Enrutamiento inter-VLAN mediante SVI:** Como la sede tiene switches multicapa, el inter-VLAN se resuelve con interfaces `Vlan87` y `Vlan97` en MS1 y MS2, sin router externo ni Router-on-a-Stick. El enrutamiento se hace en el hardware de los multicapa y se evita una dependencia adicional de un solo router.
+
+**Elección de RIPv2:** Oriente es el dominio de red legada del backbone y corresponde a un banco adquirido (Centro Financiero Legado). Se detalla en la sección 9.
+
+### 8.4 Inventario de dispositivos y cableado
+
+| Dispositivo | Modelo | Función |
+|---|---|---|
+| MS1 | 3560-24PS (multicapa) | Switch principal, Root Bridge, HSRP activo, gateway de las VLANs 87 y 97 |
+| MS2 | 3560-24PS (multicapa) | Switch de respaldo, Root secundario, HSRP standby |
+| SW-Oriente1 | 2960-24TT | Switch de acceso, 2 VLANs |
+| SW-Oriente2 | 2960-24TT | Switch de acceso, 2 VLANs |
+| 10 PCs | PC-PT | 5 por VLAN: PC-B1 a PC-B5 (Bóveda) y PC-P1 a PC-P5 (Plataforma) |
+
+| Extremo A | Extremo B | Cable | Función |
+|---|---|---|---|
+| MS1 Fa0/1 | SW-Oriente1 Fa0/1 | Cruzado | Trunk 802.1Q |
+| MS2 Fa0/1 | SW-Oriente1 Fa0/2 | Cruzado | Trunk 802.1Q |
+| MS1 Fa0/2 | SW-Oriente2 Fa0/1 | Cruzado | Trunk 802.1Q |
+| MS2 Fa0/2 | SW-Oriente2 Fa0/2 | Cruzado | Trunk 802.1Q |
+| MS1 Fa0/24 | MS2 Fa0/24 | Cruzado | Trunk 802.1Q entre multicapa |
+| MS1 Gi0/1 | R-CORE1 Gi0/1 | Directo | Uplink de capa 3 (puerto enrutado) |
+| MS2 Gi0/1 | R-CORE1 Gi0/2 | Directo | Uplink de capa 3 (puerto enrutado) |
+| SW-Oriente1 Fa0/3-Fa0/7 | PCs | Directo | Puertos de acceso |
+| SW-Oriente2 Fa0/3-Fa0/7 | PCs | Directo | Puertos de acceso |
+
+### 8.5 Tabla de VLANs y asignación de equipos
+
+| VLAN | Nombre | Área funcional | Hosts requeridos | Dispositivos | Red |
+|---|---|---|---|---|---|
+| 87 | Boveda | Operaciones de valores | 40 | 5 | 10.71.80.128/26 |
+| 97 | Plataforma | Atención VIP | 60 | 5 | 10.71.80.0/25 |
+
+| Switch | Puertos | VLAN | PCs |
+|---|---|---|---|
+| SW-Oriente1 | Fa0/3-4 | 87 Boveda | PC-B1, PC-B2 |
+| SW-Oriente1 | Fa0/5-6 | 97 Plataforma | PC-P1, PC-P2 |
+| SW-Oriente1 | Fa0/7 | 87 Boveda | PC-B5 |
+| SW-Oriente2 | Fa0/3-4 | 87 Boveda | PC-B3, PC-B4 |
+| SW-Oriente2 | Fa0/5-6 | 97 Plataforma | PC-P3, PC-P4 |
+| SW-Oriente2 | Fa0/7 | 97 Plataforma | PC-P5 |
+
+
+### 8.6 Subnetting (VLSM)
+
+Bloque base: `10.71.80.0/24`. El segundo octeto corresponde al XX = 71. El bloque `10.71.0.0/24` se reservó para los enlaces punto a punto del backbone. Se asignó la subred de manera descendente.
+
+| VLAN | Hosts req. | Hosts + gateways | Máscara | Red | Primer host | Último host | Broadcast | Gateway virtual |
+|---|---|---|---|---|---|---|---|---|
+| 97 Plataforma | 60 | 63 | /25 (255.255.255.128) | 10.71.80.0 | .1 | .126 | .127 | 10.71.80.1 |
+| 87 Boveda | 40 | 43 | /26 (255.255.255.192) | 10.71.80.128 | .129 | .190 | .191 | 10.71.80.129 |
+
+> **Nota:** Plataforma usa /25 y no /26 porque los 60 hosts más las direcciones de MS1, MS2 y la IP virtual de HSRP suman 63, y un /26 solo ofrece 62 direcciones útiles. Bóveda necesita 43 direcciones, que caben en un /26. Queda libre `10.71.80.192/26` para crecimiento.
+
+### 8.7 Direcciones asignadas
+
+**Dispositivos de red (interfaces SVI):**
+
+| Interfaz | MS1 | MS2 | IP virtual HSRP |
+|---|---|---|---|
+| Vlan97 (Plataforma) | 10.71.80.2/25 | 10.71.80.3/25 | 10.71.80.1 |
+| Vlan87 (Boveda) | 10.71.80.130/26 | 10.71.80.131/26 | 10.71.80.129 |
+
+**Dispositivos finales:**
+
+| PC | VLAN | IP | Máscara | Gateway |
+|---|---|---|---|---|
+| PC-B1 | 87 | 10.71.80.140 | 255.255.255.192 | 10.71.80.129 |
+| PC-B2 | 87 | 10.71.80.141 | 255.255.255.192 | 10.71.80.129 |
+| PC-B3 | 87 | 10.71.80.142 | 255.255.255.192 | 10.71.80.129 |
+| PC-B4 | 87 | 10.71.80.143 | 255.255.255.192 | 10.71.80.129 |
+| PC-B5 | 87 | 10.71.80.144 | 255.255.255.192 | 10.71.80.129 |
+| PC-P1 | 97 | 10.71.80.10 | 255.255.255.128 | 10.71.80.1 |
+| PC-P2 | 97 | 10.71.80.11 | 255.255.255.128 | 10.71.80.1 |
+| PC-P3 | 97 | 10.71.80.12 | 255.255.255.128 | 10.71.80.1 |
+| PC-P4 | 97 | 10.71.80.13 | 255.255.255.128 | 10.71.80.1 |
+| PC-P5 | 97 | 10.71.80.14 | 255.255.255.128 | 10.71.80.1 |
+
+### 8.8 Mapeo lógico
+
+| Dispositivo | Rol | Trunks 802.1Q | Puertos de acceso / enrutados |
+|---|---|---|---|
+| MS1 | Switch principal / distribución, Root Bridge (VLAN 87 y 97), HSRP activo | Fa0/1 (SW-Oriente1), Fa0/2 (SW-Oriente2), Fa0/24 (MS2) | Gi0/1 enrutado hacia R-CORE1 |
+| MS2 | Distribución secundario, Root secundario, HSRP standby | Fa0/1 (SW-Oriente1), Fa0/2 (SW-Oriente2), Fa0/24 (MS1) | Gi0/1 enrutado hacia R-CORE1 |
+| SW-Oriente1 | Acceso | Fa0/1 (MS1), Fa0/2 (MS2) | Fa0/3-4 y Fa0/7 (VLAN 87), Fa0/5-6 (VLAN 97) |
+| SW-Oriente2 | Acceso | Fa0/1 (MS1), Fa0/2 (MS2) | Fa0/3-4 (VLAN 87), Fa0/5-7 (VLAN 97) |
+
+### 8.9 Configuraciones principales
+
+**SW-Oriente1** (VLANs, trunks y puertos de acceso):
+```
+hostname SW-Oriente1
+spanning-tree mode rapid-pvst
+vlan 87
+ name Boveda
+vlan 97
+ name Plataforma
+interface range FastEthernet0/1 - 2
+ switchport mode trunk
+interface range FastEthernet0/3 - 4
+ switchport mode access
+ switchport access vlan 87
+ spanning-tree portfast
+interface range FastEthernet0/5 - 6
+ switchport mode access
+ switchport access vlan 97
+ spanning-tree portfast
+interface FastEthernet0/7
+ switchport mode access
+ switchport access vlan 87
+ spanning-tree portfast
+```
+
+**SW-Oriente2** (igual que SW-Oriente1, con otro hostname y con el puerto Fa0/7 en la VLAN 97):
+```
+hostname SW-Oriente2
+interface FastEthernet0/7
+ switchport mode access
+ switchport access vlan 97
+ spanning-tree portfast
+```
+
+**MS1** (VLANs, Root Bridge, SVIs y HSRP activo):
+```
+hostname MS1
+ip routing
+vlan 87
+ name Boveda
+vlan 97
+ name Plataforma
+spanning-tree mode rapid-pvst
+spanning-tree vlan 87,97 priority 4096
+interface range FastEthernet0/1 - 2
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+interface FastEthernet0/24
+ switchport trunk encapsulation dot1q
+ switchport mode trunk
+interface Vlan97
+ ip address 10.71.80.2 255.255.255.128
+ standby 97 ip 10.71.80.1
+ standby 97 priority 110
+ standby 97 preempt
+ standby 97 timers 1 3
+interface Vlan87
+ ip address 10.71.80.130 255.255.255.192
+ standby 87 ip 10.71.80.129
+ standby 87 priority 110
+ standby 87 preempt
+ standby 87 timers 1 3
+```
+
+**MS2** (igual que MS1, con Root secundario y HSRP standby):
+```
+hostname MS2
+spanning-tree vlan 87,97 priority 8192
+interface Vlan97
+ ip address 10.71.80.3 255.255.255.128
+ standby 97 ip 10.71.80.1
+ standby 97 priority 100
+ standby 97 preempt
+ standby 97 timers 1 3
+interface Vlan87
+ ip address 10.71.80.131 255.255.255.192
+ standby 87 ip 10.71.80.129
+ standby 87 priority 100
+ standby 87 preempt
+ standby 87 timers 1 3
+```
+> **Nora:** El resto de la configuración de MS2, es decir `ip routing`, las VLANs, `rapid-pvst` y los trunks, es idéntico al de MS1.
+
+### 8.10 Evidencias de VLANs, trunks, Rapid PVST+ y HSRP
+
+**VLANs** (`show vlan brief` en SW-Oriente1):
+
+En SW-Oriente1, la VLAN 87 `Boveda` contiene Fa0/3, Fa0/4 y Fa0/7, y la VLAN 97 `Plataforma` contiene Fa0/5 y Fa0/6. Ambas VLANs aparecen con nombre y en estado activo.
+
+![VLANs de Oriente](Imagenes/Oriente-RIPv2/12_VLANs_Oriente.png)
+
+**Trunks** (`show interfaces trunk` en SW-Oriente1):
+Fa0/1 (hacia MS1) y Fa0/2 (hacia MS2) están en modo trunk con encapsulación 802.1Q. Las VLANs 1, 87 y 97 están activas en ambos. En estado de reenvío de spanning-tree, Fa0/1 lleva las VLANs 1, 87 y 97, mientras que Fa0/2 solo lleva la VLAN 1: es el camino alterno, bloqueado por Rapid PVST+ para las VLANs 87 y 97.
+
+![Trunks de Oriente](Imagenes/Oriente-RIPv2/13_Trunks_Oriente.png)
+
+**Rapid PVST+ y Root Bridge** (`show spanning-tree vlan 97`; salida de consola, extracto):
+MS1 es el Root Bridge de la VLAN 97 (prioridad 4096 más el ID de VLAN, 4193) y todos sus puertos están en reenvío. En SW-Oriente1, Fa0/1 (hacia MS1) es el puerto raíz y Fa0/2 (hacia MS2) es el alterno bloqueado.
+
+```
+MS1#show spanning-tree vlan 97
+VLAN0097
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    4193
+             Address     00E0.A3A9.8879
+             This bridge is the root
+
+Interface        Role Sts Cost      Prio.Nbr Type
+---------------- ---- --- --------- -------- ----
+Fa0/24           Desg FWD 19        128.24   P2p
+Fa0/1            Desg FWD 19        128.1    P2p
+Fa0/2            Desg FWD 19        128.2    P2p
+```
+
+```
+SW-Oriente1>show spanning-tree vlan 97
+VLAN0097
+  Spanning tree enabled protocol rstp
+  Root ID    Priority    4193
+             Address     00E0.A3A9.8879
+             Cost        19
+             Port        1(FastEthernet0/1)
+
+Interface        Role Sts Cost      Prio.Nbr Type
+---------------- ---- --- --------- -------- ----
+Fa0/2            Altn BLK 19        128.2    P2p
+Fa0/5            Desg FWD 19        128.5    P2p
+Fa0/6            Desg FWD 19        128.6    P2p
+Fa0/1            Root FWD 19        128.1    P2p
+```
+**HSRP en MS1** (`show standby brief`):
+MS1 es el gateway activo (Active) de los grupos 87 y 97, con prioridad 110 y `preempt` habilitado (P). El standby es MS2: 10.71.80.131 para la VLAN 87 y 10.71.80.3 para la VLAN 97. Las IP virtuales son 10.71.80.129 y 10.71.80.1.*
+
+![HSRP en MS1](Imagenes/Oriente-RIPv2/30_HSRP_Oriente.png)
+
+**HSRP en MS2** (`show standby brief`):
+Descripción: MS2 está en estado Standby en los dos grupos, con prioridad 100. El gateway activo que reconoce es MS1 (10.71.80.130 para la VLAN 87 y 10.71.80.2 para la VLAN 97).
+
+![HSRP en MS2](Imagenes/Oriente-RIPv2/31_Estado_HSRP.png)
+
+### 8.11 Enrutamiento inter-VLAN
+
+Las SVIs `Vlan87` y `Vlan97` de MS1 y MS2 enrutan entre las dos VLANs de Oriente. La prueba se hizo desde PC-B1 (VLAN 87) hacia PC-P1 (VLAN 97).
+
+![Inter-VLAN de Oriente](Imagenes/Oriente-RIPv2/21_InterVLAN_Oriente.png)
+
+Ping de PC-B1 (10.71.80.140) a PC-P1 (10.71.80.10), 4 paquetes enviados y 4 recibidos, 0 % de pérdida. El TTL de 127 indica que el paquete atravesó un salto de capa 3, el gateway de MS1 o MS2.*
+
+---
+
+## 9. Integración con el backbone: RIPv2 y redistribución
+
+### 9.1 Enlaces hacia el núcleo
+
+Cada multicapa tiene su propio enlace de capa 3 hacia el backbone. Los dos van hacia **R-CORE1**. Se asignaron dos subredes **/30** adicionales a las seis del backbone.
+
+| Red | Primer extremo | Segundo extremo | Medio |
+|---|---|---|---|
+| 10.71.0.32/30 | R-CORE1 G0/1: 10.71.0.33 | MS1 G0/1: 10.71.0.34 | Ethernet |
+| 10.71.0.36/30 | R-CORE1 G0/2: 10.71.0.37 | MS2 G0/1: 10.71.0.38 | Ethernet |
+
+En MS1 y MS2 la interfaz Gi0/1 se configuró como puerto enrutado (`no switchport`), no como parte de una VLAN.
+
+### 9.2 Elección de RIPv2
+
+Se pide un dominio de red legada con RIPv2, y Oriente corresponde al banco adquirido por lo que se le asignó este protocolo. Se usó la versión 2 y no la 1 porque RIPv2 transporta la máscara de cada ruta (soporta VLSM): Oriente usa un /25 y un /26 dentro del mismo bloque, y los enlaces del backbautone son /30. Se deshabilitó el resumen omático (`no auto-summary`) porque las redes 10.71.0.x y 10.71.80.x pertenecen a la misma clase A y se resumirían como 10.0.0.0/8. Las SVIs se declararon pasivas para no enviar actualizaciones hacia los PCs.
+
+### 9.3 Configuración
+
+**R-CORE1** (backbone; configuración agregada por este integrante: uplinks, RIPv2 y redistribución):
+```
+interface GigabitEthernet0/1
+ description Enlace a MS1 Oriente
+ ip address 10.71.0.33 255.255.255.252
+ no shutdown
+interface GigabitEthernet0/2
+ description Enlace a MS2 Oriente
+ ip address 10.71.0.37 255.255.255.252
+ no shutdown
+router rip
+ version 2
+ no auto-summary
+ passive-interface default
+ no passive-interface GigabitEthernet0/1
+ no passive-interface GigabitEthernet0/2
+ network 10.0.0.0
+ redistribute ospf 7 metric 2
+router ospf 7
+ redistribute rip subnets
+```
+
+**MS1** (uplink y RIPv2):
+```
+interface GigabitEthernet0/1
+ description Uplink a R-CORE1
+ no switchport
+ ip address 10.71.0.34 255.255.255.252
+ no shutdown
+router rip
+ version 2
+ no auto-summary
+ passive-interface Vlan87
+ passive-interface Vlan97
+ network 10.0.0.0
+```
+
+**MS2** (uplink y RIPv2):
+```
+interface GigabitEthernet0/1
+ description Uplink a R-CORE1
+ no switchport
+ ip address 10.71.0.38 255.255.255.252
+ no shutdown
+router rip
+ version 2
+ no auto-summary
+ passive-interface Vlan87
+ passive-interface Vlan97
+ network 10.0.0.0
+```
+
+### 9.4 Redistribución de rutas
+
+R-CORE1 es el punto donde se unen RIPv2 y OSPF 7, y redistribuye en los dos sentidos:
+
+| Punto de redistribución | Dominios | Dirección | Configuración |
+|---|---|---|---|
+| R-CORE1 | RIPv2 ↔ OSPF 7 | Bidireccional | `redistribute ospf 7 metric 2` en RIP y `redistribute rip subnets` en OSPF |
+
+Con este punto, el backbone cuenta con tres puntos de redistribución: R-CORE2 (OSPF ↔ EIGRP), R-Central1 (estáticas → OSPF) y R-CORE1 (RIPv2 ↔ OSPF).
+
+Las rutas de Oriente aparecen en el resto del backbone como rutas externas de OSPF (`O E2`), y las rutas de OSPF, EIGRP y estáticas llegan a MS1 y MS2 como rutas RIP (`R`):
+
+```
+R-CORE2#show ip route
+O E2    10.71.80.0/25 [110/20] via 10.71.0.1, 00:00:56, Serial0/3/0
+O E2    10.71.80.128/26 [110/20] via 10.71.0.1, 00:00:56, Serial0/3/0
+```
+
+```
+MS1#show ip route rip
+R       172.16.71.128/25 [120/2] via 10.71.0.33, 00:00:23, GigabitEthernet0/1
+R       192.168.17.0/24 [120/2] via 10.71.0.33, 00:00:23, GigabitEthernet0/1
+```
+
+### 9.5 Evidencias de RIPv2 y redistribución
+
+**RIPv2 en MS1** (`show ip protocols` y `show ip route rip`):
+MS1 ejecuta RIP versión 2 con resumen automático deshabilitado, anuncia la red 10.0.0.0, tiene pasivas las interfaces Vlan87 y Vlan97 y aprende rutas de R-CORE1 (10.71.0.33). La tabla muestra las rutas RIP hacia el backbone (10.71.0.x), Norte (172.16.71.0/26, .64/27 y .96/27), el Data Center (172.16.71.128/25) y Occidente (192.168.17, 27, 37 y 47.0/24).
+
+![RIPv2 en MS1](Imagenes/Oriente-RIPv2/22_RIPv2.png)
+
+**Redistribución en R-CORE1** (`show ip protocols`):
+R-CORE1 ejecuta RIP y OSPF 7. En RIP aparece `Redistributing: rip, ospf 7` y las interfaces Gi0/1 y Gi0/2 activas, con MS1 (10.71.0.34) y MS2 (10.71.0.38) como fuentes de información. En OSPF 7 aparece como `autonomous system boundary router` que redistribuye rutas externas desde RIP.
+
+![Redistribución en R-CORE1, protocolos](Imagenes/Oriente-RIPv2/23.1_Redistribucion.png)
+
+**Redistribución en R-CORE1** (`show ip route`):
+Tabla de rutas de R-CORE1. Las redes de Oriente (10.71.80.0/25 y 10.71.80.128/26) aparecen como rutas RIP por los dos uplinks (10.71.0.34 y 10.71.0.38), mientras que las redes de Norte, Data Center y Occidente se aprenden por OSPF.
+
+![Redistribución en R-CORE1, rutas](Imagenes/Oriente-RIPv2/23.2_Redistribucion.png)
+
+**Convergencia de rutas en MS1 y MS2** (`show ip route`):
+Tablas de rutas de MS1 (izquierda) y MS2 (derecha). Ambos conocen como conectadas las redes de Oriente y aprenden por RIP, desde R-CORE1, las demás redes del backbone, Norte, Data Center y Occidente. Cada multicapa usa su propio uplink (10.71.0.33 para MS1 y 10.71.0.37 para MS2).
+
+![Convergencia en MS1 y MS2](Imagenes/Oriente-RIPv2/32_Convergencia_Rutas.png)
+
+**Estado final de R-CORE1 en convergencia:**
+`show ip route` de R-CORE1 con la red ya estable: 17 subredes en 10.0.0.0/8, 4 subredes en 172.16.0.0/16 y las cuatro redes 192.168.x7.0/24 de Occidente, además de las rutas RIP de Oriente por 10.71.0.34 y 10.71.0.38.
+
+![R-CORE1 convergido](Imagenes/Oriente-RIPv2/41_Redistribucion_Final.png)
+
+---
+
+## 10. Pruebas de conectividad de Oriente
+
+Todos los pings se hicieron desde el Command Prompt de un PC.
+
+| # | Origen | Destino | IP de destino | Resultado | TTL |
+|---|---|---|---|---|---|
+| 1 | PC-B1 | PC-B3 (misma VLAN, otro switch) | 10.71.80.142 | Exitoso | 128 |
+| 2 | PC-P1 | PC-P3 (misma VLAN, otro switch) | 10.71.80.12 | Exitoso | 128 |
+| 3 | PC-B1 | Gateway virtual de Bóveda | 10.71.80.129 | Exitoso | 255 |
+| 4 | PC-P1 | Gateway virtual de Plataforma | 10.71.80.1 | Exitoso | 255 |
+| 5 | PC-B1 | PC-P1 (inter-VLAN) | 10.71.80.10 | Exitoso | 127 |
+| 6 | PC-P5 | PC-B1 (inter-VLAN) | 10.71.80.140 | Exitoso | 127 |
+| 7 | PC-B1 | CAJA_PC1 (Occidente) | 192.168.17.11 | Exitoso | 125 |
+| 8 | PC-B1 | PC-Analisis1 (Norte) | 172.16.71.2 | Exitoso | 124 |
+| 9 | PC-B1 | PC-Web_Apps1 (Data Center) | 172.16.71.130 | Exitoso | 123 |
+| 10 | PC-B1 | PC-NOC1 (Data Center) | 172.16.71.194 | Exitoso | 123 |
+| 11 | CAJA_PC1 (Occidente) | PC-B1 | 10.71.80.140 | Exitoso | 125 |
+| 12 | PC-Analisis1 (Norte) | PC-B1 | 10.71.80.140 | Exitoso | 124 |
+| 13 | PC-Web_Apps1 (Data Center) | PC-B1 | 10.71.80.140 | Exitoso | 123 |
+
+
+**Pings de PC-B1 hacia las otras sedes:**
+Desde PC-B1 se hizo ping a CAJA_PC1 de Occidente (192.168.17.11), a PC-Analisis1 de Norte (172.16.71.2), a PC-Web_Apps1 (172.16.71.130) y a PC-NOC1 (172.16.71.194) del Data Center. Los cuatro terminaron con 4 paquetes recibidos y 0 % de pérdida, con TTL 125, 124, 123 y 123 respectivamente.
+
+![Ping de Oriente hacia las demás sedes](Imagenes/Oriente-RIPv2/39_Ping_Oriente_Occidente.png)
+
+---
+
+## 11. Prueba de tolerancia a fallos de HSRP
+
+### 11.1 Procedimiento
+
+Se simuló el corte de energía de MS1 que describe el enunciado, apagando todos sus enlaces:
+
+1. Se inició un ping continuo desde PC-B1 hacia CAJA_PC1 de Occidente: `ping -t 192.168.17.11`.
+2. En **MS1** se apagaron `Fa0/1`, `Fa0/2` (hacia los switches de acceso), `Fa0/24` (hacia MS2) y `Gi0/1` (uplink hacia R-CORE1) con `shutdown`.
+3. Se esperó a que el ping se recuperara y se verificó `show standby brief` en MS2.
+4. En R-CORE1 se verificó con `show ip route rip` que las rutas de Oriente quedaron solo por el uplink de MS2 (10.71.0.38).
+5. Se detuvo el ping y se revisaron las estadísticas.
+
+### 11.2 Resultado
+
+![Falla de HSRP](Imagenes/Oriente-RIPv2/40_Fallo_HSRP.png)
+
+En MS2, `show standby brief` pasa de Standby a Active en los grupos 87 y 97 cuando cae el enlace con MS1, con el standby en `unknown`. En R-CORE1, `show ip route rip` muestra primero las rutas de Oriente por los dos uplinks (10.71.0.34 y 10.71.0.38) y, después de apagar el enlace de MS1, solo por 10.71.0.38. En PC-B1, el ping continuo muestra respuestas, una breve racha de cuatro tiempos de espera agotados durante la conmutación y de nuevo respuestas, con estadísticas de 98 paquetes enviados, 92 recibidos y 6 perdidos (7 %).
+
+| Elemento | Antes de la falla | Después de la falla |
+|---|---|---|
+| Gateway HSRP activo (grupos 87 y 97) | MS1 | MS2 |
+| Rutas de Oriente en R-CORE1 | Por 10.71.0.34 (MS1) y 10.71.0.38 (MS2) | Solo por 10.71.0.38 (MS2) |
+| Ping continuo de PC-B1 | Respuestas | 4 pérdidas consecutivas y recuperación automática |
+
+La comunicación se restableció sin ninguna intervención manual y sin reconfigurar los PCs. En una prueba previa, al restaurar los enlaces de MS1, este recuperó el rol Active gracias a `preempt` y MS2 volvió a Standby.
 
 ---
